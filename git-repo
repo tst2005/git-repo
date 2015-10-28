@@ -1,0 +1,252 @@
+#!/bin/sh
+
+GITALL_DIRNAME="${GITALL_DIRNAME:-.git_repo.d}"
+GITALL_DIR="$(pwd)/${GITALL_DIRNAME}"
+
+_err() {
+	echo >&2 "ERROR: $1"
+	exit 1
+}
+
+_initok() { [ -d "$GITALL_DIR" ]; }
+
+_checkdir() {
+	_initok || _err "No such $GITALL_DIR"
+}
+
+usage() {
+	echo "Usage: $0 <...>"
+}
+
+gitall_init() {
+	local indir="${1:-.}"
+	if _initok; then
+		echo "Already initialized"
+		return 0
+	fi
+	(
+		cd -- "$indir" && mkdir -- ".git_all";
+	) || return 1
+}
+
+#   baseurl [REMOTE [URL|-]]     get/set/delete the baseurl of a remote
+#   origin [REPO [REMOTE|URL|-]] get/set/delete the known origin of a repo
+
+
+#	tst2005.baseurl		= https://github.com/tst2005/
+#	keplerproject.baseurl	= https://github.com/keplerproject/
+#	
+#	lua-utf8.origin = "tst2005/lua-utf8"	# https://github.com/tst2005/lua-utf8 dans lua-utf8
+#	json.origin     = "tst2005/lunajson"	# https://github.com/tst2005/lunajson dans json
+#
+#	leg.origin	= tst2005/leg		#
+#	leg.upstream	= keplerproject/leg	#
+
+
+set_url_name() {
+        url="${1%/}" # FIXME: rtrip / url
+        if [ $# -eq 1 ] || [ -z "$2" ]; then
+                name="$(basename "${url}" .git)"
+                url="$url/"
+	else
+		url="$url/"
+		name="$2"
+	fi
+}
+autoname_from_url() {
+	basename "$1" .git
+}
+	
+
+_pathfor() {
+	infile="$GITALL_DIR/$2.$1"
+}
+_exists() {
+	[ -f "$infile" ]
+}
+_read() {
+	cat -- "$infile"
+}
+_write() {
+	printf '%s\n' "$1" > "$infile"
+}
+
+gitall_set_stuff() {
+	local stuff="$1";shift
+	case "$stuff" in
+		baseurl|origin|upstream) ;;
+		*) _err "internal error: invalid stuff '$stuff'"
+		return 1
+	esac
+	[ $# -gt 0 ] || return 1
+
+	local name url
+	set_url_name "$1" "$2"
+
+	[ -n "$name" ] || _err "empty name ?!"
+
+	local infile
+	_pathfor "$stuff" "$name"
+
+	if _exists; then
+		local value="$(_read)"
+		if [ "$value" != "$url" ]; then
+			echo "$stuff for $name already exists with a different value ('$value' != '$url')"
+			return 1
+		fi
+	else
+		_write "$url"
+	fi
+}
+
+gitall_set_origin() {
+	local infile
+	_pathfor origin "$2"
+	_write "$1" || _err "error occured during write of $2"
+}
+
+_checkscheme() {
+	case "$1" in
+		https://*) ;;
+		http://*) ;;
+		ssh://*) ;;
+		*) return 1
+	esac
+}
+
+
+# ...repo add https://aa@bb/cc/dd[.git] [localname]
+# ...repo add cc/dd[.git] [localname]
+
+gitrepo_addrepo() {
+	case "$1" in
+		*?://*)
+			if ! _checkscheme "$1"; then
+				echo "Scheme not supported" ; return 1
+			fi
+			local baseurl="$(dirname "$1")" # remove the /repo.git suffix
+			local name url
+			set_url_name "$baseurl" "$2"
+			if gitall_set_stuff baseurl "$url"; then
+			        local localname="${2:-$(autoname_from_url "$1")}"
+				local r="${1#*://*/}"
+				gitall_set_origin "$r" "$localname"
+			fi
+		;;
+		*)
+			local base="${1%%/*}" # keep only the first word
+			local suffix="${1#*/}" # the left part without the first word
+			local infile
+			_pathfor baseurl "$base"
+			if _exists; then
+				local baseurl="$(_read)"
+				[ "$baseurl" = "" ] ;# FIXME: check if the value is equal as the one wanted...
+				# is pas identique recommande d'utiliser user/suffix  pour ajouter baseurl/user/suffix ?
+			else
+				gitall_set_stuff baseurl "$baseurl"
+			fi
+			local localname="${2:-$(autoname_from_url "$1")}"
+			local infile
+			_pathfor origin "$localname"
+			_write "$1" || _err "error occured during write of $localname"
+	esac
+}
+
+# gitall_set_stuff baseurl https://github.com/tst2005/
+# gitall_set_stuff baseurl https://github.com/tst2005/ tst2005
+# gitall_set_stuff origin  tst2005/lunajson
+# gitall_set_stuff origin  tst2005/lunajson json
+# 
+
+_getfullurl() {
+	local infile
+	_pathfor origin "$1"
+	if ! _exists; then
+		echo >&2 "no such origin for $1 ($infile)"
+		return 1
+	fi
+	local suffix="$(_read)"
+	local base="${suffix%%/*}"
+	local infile
+	_pathfor baseurl "$base" 
+	if ! _exists; then
+		echo "no such baseurl for $base"
+		return 2
+	fi
+	local baseurl="$(_read)"
+	printf %s "$baseurl$suffix"
+}
+
+gitrepo_list_one() {
+	_checkdir
+	local f="$1" ;# "${1%.origin}"
+	printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
+}
+
+
+gitrepo_list_all() {
+	_checkdir
+	(
+		cd -- "$GITALL_DIR" && \
+		for f in *.origin; do
+			f="${f%.origin}"
+			printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
+		done
+	)
+}
+
+
+gitrepo_list() {
+	_checkdir
+
+	if [ $# -eq 0 ]; then
+		gitrepo_list_all
+		return $?
+	fi
+	for f in "$@"; do
+		local infile
+		_pathfor origin "$f"
+		if _exists; then
+			gitrepo_list_one "$f"
+		else
+			_pathfor origin "${f%.origin}"
+			if _exists; then
+				gitrepo_list_one "${f%.origin}"
+			else
+				echo "No such $f"
+			fi
+		fi
+	done
+}
+
+gitrepo_clone() {
+	local reponame="$1";shift
+	
+}
+
+
+
+gitrepo() {
+	case "$1" in
+		init)	shift; gitall_init "$@" ;;
+		add|addrepo) shift
+			gitrepo_addrepo "$@"
+		;;
+		baseurl|origin|upstream)
+			local stuff="$1"; shift
+			gitall_set_stuff "$stuff" "$@"
+		;;
+		list)
+			shift
+			gitrepo_list "$@"
+		;;
+		*)
+			if [ $# -eq 0 ]; then
+				gitrepo_list "$@"
+			else
+				usage
+			fi
+	esac
+}
+gitrepo "$@"
+

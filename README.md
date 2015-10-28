@@ -21,3 +21,13 @@ $ ./git-repo add @me/git-repo git-repo-over-ssh
 $ ./git-repo list git-repo-over-ssh
 git-repo-over-ssh/   ssh://git@github.com/tst2005/git-repo
 ```
+
+
+
+Similar project
+===============
+
+* [gws](https://github.com/StreakyCobra/gws)
+* [mgit](https://github.com/capr/multigit)
+
+

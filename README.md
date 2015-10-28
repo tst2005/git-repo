@@ -4,7 +4,7 @@ For now it only support to add and list
 ```
 $ ./git-repo add https://github.com/tst2005/git-repo
 $ ./git-repo list git-repo
-git-repo/            https://github.com/tst2005/tst2005/git-repo
+git-repo/            https://github.com/tst2005/git-repo
 ```
 
 It automatically split the URL in 2 parts : `scheme://hostname.tld/key/the/suffix/...`
@@ -21,4 +21,3 @@ $ ./git-repo add @me/git-repo git-repo-over-ssh
 $ ./git-repo list git-repo-over-ssh
 git-repo-over-ssh/   ssh://git@github.com/tst2005/git-repo
 ```
-But it's currently bugged :p

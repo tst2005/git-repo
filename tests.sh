@@ -26,39 +26,39 @@ INIT
 
 RESET
 T ./git-repo add http://aaaa/key1/repo1.git <<EOF
-./key1.baseurl:http://aaaa/key1/
-./repo1.origin:key1/repo1.git
+./baseurl/key1.baseurl:http://aaaa/key1/
+./origin/repo1.origin:key1/repo1.git
 EOF
 
 
 RESET
 T ./git-repo add http://aaaa/key1/repo2.git dir2<<EOF
-./dir2.origin:key1/repo2.git
-./key1.baseurl:http://aaaa/key1/
+./baseurl/key1.baseurl:http://aaaa/key1/
+./origin/dir2.origin:key1/repo2.git
 EOF
 
 RESET
 ./git-repo add http://aaaa/key1/repo3.git
 T ./git-repo add key1/repo2.git repo2bis<<EOF
-./key1.baseurl:http://aaaa/key1/
-./repo2bis.origin:key1/repo2.git
-./repo3.origin:key1/repo3.git
+./baseurl/key1.baseurl:http://aaaa/key1/
+./origin/repo2bis.origin:key1/repo2.git
+./origin/repo3.origin:key1/repo3.git
 EOF
 
 RESET
 ./git-repo add http://aaaa/key1/repo3.git
 T ./git-repo add key1/repo2.git<<EOF
-./key1.baseurl:http://aaaa/key1/
-./repo2.origin:key1/repo2.git
-./repo3.origin:key1/repo3.git
+./baseurl/key1.baseurl:http://aaaa/key1/
+./origin/repo2.origin:key1/repo2.git
+./origin/repo3.origin:key1/repo3.git
 EOF
 
 RESET
 ./git-repo add http://aaaa/key1/repo3.git
 T ./git-repo upstream http://bbb/userB/repoB.git repo3 <<EOF
-./key1.baseurl:http://aaaa/key1/
-./repo3.origin:key1/repo3.git
-./repo3.upstream:http://bbb/userB/repoB.git/
+./baseurl/key1.baseurl:http://aaaa/key1/
+./origin/repo3.origin:key1/repo3.git
+./upstream/repo3.upstream:http://bbb/userB/repoB.git/
 EOF
 
 RESET

@@ -78,15 +78,20 @@ get_name_from_suffix() {
 
 
 _pathfor() {
-	infile="$GITALL_DIR/$2.$1"
+	infile="$GITALL_DIR/$1/$2.$1"
 }
 _exists() {
 	[ -f "$infile" ]
 }
 _read() {
+	[ -d "$(dirname "$infile")" ] || return 1
 	cat -- "$infile"
 }
 _write() {
+	local dir="$(dirname "$infile")"
+	if [ ! -d "$dir" ]; then
+		mkdir -- "$dir"
+	fi
 	printf '%s\n' "$1" > "$infile"
 }
 

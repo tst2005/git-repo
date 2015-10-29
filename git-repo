@@ -3,7 +3,7 @@
 GITALL_DIRNAME="${GITALL_DIRNAME:-.git_repo.d}"
 GITALL_DIR="$(pwd)/${GITALL_DIRNAME}"
 
-_err() {
+_fatal() {
 	echo >&2 "ERROR: $1"
 	exit 1
 }
@@ -11,7 +11,7 @@ _err() {
 _initok() { [ -d "$GITALL_DIR" ]; }
 
 _checkdir() {
-	_initok || _err "No such $GITALL_DIR"
+	_initok || _fatal "No such $GITALL_DIR"
 }
 
 usage() {
@@ -33,16 +33,6 @@ gitrepo_init() {
 #   origin [REPO [REMOTE|URL|-]] get/set/delete the known origin of a repo
 
 
-#	tst2005.baseurl		= https://github.com/tst2005/
-#	keplerproject.baseurl	= https://github.com/keplerproject/
-#	
-#	lua-utf8.origin = "tst2005/lua-utf8"	# https://github.com/tst2005/lua-utf8 dans lua-utf8
-#	json.origin     = "tst2005/lunajson"	# https://github.com/tst2005/lunajson dans json
-#
-#	leg.origin	= tst2005/leg		#
-#	leg.upstream	= keplerproject/leg	#
-
-
 set_url_name() {
         url="${1%/}" # FIXME: rtrip / url
         if [ $# -eq 1 ] || [ -z "$2" ]; then
@@ -56,7 +46,36 @@ set_url_name() {
 autoname_from_url() {
 	basename "$1" .git
 }
-	
+
+# https://domain.tld/user/repo[.git] ->  https://domain.tld/user/
+get_baseurl_from_url() {
+	printf '%s/' "$(dirname "$1")"
+}
+[ "$(get_baseurl_from_url 'scheme://domain.tld/user/repo[.git]')" = 'scheme://domain.tld/user/' ] || echo "INTERNAL error for get_baseurl_from_url"
+
+# https://domain.tld/user/repo[.git] -> user/repo[.git]
+get_suffix_from_url() {
+	#local urlbase="${1%%/*}" # keep only the first word
+	#local suffix="${1#*/}" # the left part without the first word
+	local suffix="${1#*://*/}" # scheme://domain.tld/user/repo[.git] -> remove{{scheme://domain.tld/}} -> user/repo[.git]
+	# FIXME: how many subart should I eat ? default 0 scheme://domain.tld/subpart1/subpart2/user/repo[.git] eat(2) -> user/repo[.git]
+	printf '%s' "$suffix"
+}
+[ "$(get_suffix_from_url 'scheme://domain.tld/user/repo[.git]')" = 'user/repo[.git]' ] || echo "INTERNAL error for get_suffix_from_url"
+
+# https://domain.tld/user/ -> user
+get_name_from_baseurl() {
+	basename "$1"
+}
+[ "$(get_name_from_baseurl 'scheme://domain.tld/user/')" = 'user' ] || echo "INTERNAL error for get_name_from_baseurl"
+
+# user/repo[.git] -> user
+get_name_from_suffix() {
+	dirname "$1"
+}
+[ "$(get_name_from_suffix 'user/repo[.git]')" = 'user' ] || echo "INTERNAL error for get_name_from_suffix"
+
+
 
 _pathfor() {
 	infile="$GITALL_DIR/$2.$1"
@@ -75,7 +94,7 @@ gitrepo_set_stuff() {
 	local stuff="$1";shift
 	case "$stuff" in
 		baseurl|origin|upstream) ;;
-		*) _err "internal error: invalid stuff '$stuff'"
+		*) _fatal "internal error: invalid stuff '$stuff'"
 		return 1
 	esac
 	[ $# -gt 0 ] || return 1
@@ -83,7 +102,7 @@ gitrepo_set_stuff() {
 	local name url
 	set_url_name "$1" "$2"
 
-	[ -n "$name" ] || _err "empty name ?!"
+	[ -n "$name" ] || _fatal "empty name ?!"
 
 	local infile
 	_pathfor "$stuff" "$name"
@@ -102,7 +121,7 @@ gitrepo_set_stuff() {
 gitrepo_set_origin() {
 	local infile
 	_pathfor origin "$2"
-	_write "$1" || _err "error occured during write of $2"
+	_write "$1" || _fatal "error occured during write of $2"
 }
 
 _checkscheme() {
@@ -148,7 +167,7 @@ gitrepo_addrepo() {
 			local localname="${2:-$(autoname_from_url "$1")}"
 			local infile
 			_pathfor origin "$localname"
-			_write "$1" || _err "error occured during write of $localname"
+			_write "$1" || _fatal "error occured during write of $localname"
 	esac
 }
 
@@ -225,23 +244,82 @@ gitrepo_clone() {
 	
 }
 
-
+gitrepo_parseoptions() {
+	local s=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--)			s=$(($s+1)); break ;;
+			--help|-h)
+				action=help;	s=$(($s+1)); break ;;
+			--list|-l)
+				action=list;	s=$(($s+1)); break ;;
+			--force|-f)
+				opt_force=true; s=$(($s+1));;
+			--*)
+				:
+			;;
+			-*)
+				:
+			;;
+			*) break
+		esac
+		shift; s=$(($s+1));
+	done
+	shift="$s"
+}
+gitrepo_parseaction() {
+	local a="$1"
+	case "$a" in
+		help) ;;
+		init) ;;
+		list|ls) a=list ;;
+		add|addrepo) a='add';;
+		baseurl|origin|upstream) ;;
+		*) a=""
+	esac
+	if [ -z "$a" ]; then
+		return 1
+	fi
+	action="$a"
+	return 0
+}
 
 gitrepo() {
-	case "$1" in
-		init)	shift; gitrepo_init "$@" ;;
-		add|addrepo) shift
+	local opt_force=false
+	local action shift
+	gitrepo_parseoptions "$@"
+	shift $shift
+
+	# default action
+	if [ -z "$action" ]; then
+		# if args, try to use the first word as action
+		if [ $# -gt 0 ]; then
+			if gitrepo_parseaction "$1"; then
+				shift
+			else
+				action=_error_
+			fi
+		else
+			action="help"
+		fi
+	fi
+	case "$action" in
+		help)
+			usage; exit 0;;
+		init)
+			gitrepo_init "$@" ;;
+		add|addrepo)
 			gitrepo_addrepo "$@"
 		;;
 		baseurl|origin|upstream)
-			local stuff="$1"; shift
-			gitrepo_set_stuff "$stuff" "$@"
+			gitrepo_set_stuff "$action" "$@"
 		;;
 		list)
-			shift
 			gitrepo_list "$@"
 		;;
+		_error_) echo error ;;
 		*)
+			echo "SHOULD NOT APPEND !!!!!!!!"
 			if [ $# -eq 0 ]; then
 				gitrepo_list "$@"
 			else

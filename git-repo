@@ -213,8 +213,8 @@ gitrepo_list_all() {
 	_checkdir
 	(
 		cd -- "$GITALL_DIR" && \
-		for f in *.origin; do
-			f="${f%.origin}"
+		for f in origin/*.origin; do
+			f="$(basename "$f" .origin)"
 			printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
 		done
 	)

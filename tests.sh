@@ -54,4 +54,12 @@ T ./git-repo add key1/repo2.git<<EOF
 EOF
 
 RESET
+./git-repo add http://aaaa/key1/repo3.git
+T ./git-repo upstream http://bbb/userB/repoB.git repo3 <<EOF
+./key1.baseurl:http://aaaa/key1/
+./repo3.origin:key1/repo3.git
+./repo3.upstream:http://bbb/userB/repoB.git/
+EOF
+
+RESET
 DEINIT

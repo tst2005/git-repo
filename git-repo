@@ -18,14 +18,14 @@ usage() {
 	echo "Usage: $0 <...>"
 }
 
-gitall_init() {
+gitrepo_init() {
 	local indir="${1:-.}"
 	if _initok; then
 		echo "Already initialized"
 		return 0
 	fi
 	(
-		cd -- "$indir" && mkdir -- ".git_all";
+		cd -- "$indir" && mkdir -- "$GITALL_DIR";
 	) || return 1
 }
 
@@ -71,7 +71,7 @@ _write() {
 	printf '%s\n' "$1" > "$infile"
 }
 
-gitall_set_stuff() {
+gitrepo_set_stuff() {
 	local stuff="$1";shift
 	case "$stuff" in
 		baseurl|origin|upstream) ;;
@@ -99,7 +99,7 @@ gitall_set_stuff() {
 	fi
 }
 
-gitall_set_origin() {
+gitrepo_set_origin() {
 	local infile
 	_pathfor origin "$2"
 	_write "$1" || _err "error occured during write of $2"
@@ -127,10 +127,10 @@ gitrepo_addrepo() {
 			local baseurl="$(dirname "$1")" # remove the /repo.git suffix
 			local name url
 			set_url_name "$baseurl" "$2"
-			if gitall_set_stuff baseurl "$url"; then
+			if gitrepo_set_stuff baseurl "$url"; then
 			        local localname="${2:-$(autoname_from_url "$1")}"
 				local r="${1#*://*/}"
-				gitall_set_origin "$r" "$localname"
+				gitrepo_set_origin "$r" "$localname"
 			fi
 		;;
 		*)
@@ -143,7 +143,7 @@ gitrepo_addrepo() {
 				[ "$baseurl" = "" ] ;# FIXME: check if the value is equal as the one wanted...
 				# is pas identique recommande d'utiliser user/suffix  pour ajouter baseurl/user/suffix ?
 			else
-				gitall_set_stuff baseurl "$baseurl"
+				gitrepo_set_stuff baseurl "$baseurl"
 			fi
 			local localname="${2:-$(autoname_from_url "$1")}"
 			local infile
@@ -152,10 +152,10 @@ gitrepo_addrepo() {
 	esac
 }
 
-# gitall_set_stuff baseurl https://github.com/tst2005/
-# gitall_set_stuff baseurl https://github.com/tst2005/ tst2005
-# gitall_set_stuff origin  tst2005/lunajson
-# gitall_set_stuff origin  tst2005/lunajson json
+# gitrepo_set_stuff baseurl https://github.com/tst2005/
+# gitrepo_set_stuff baseurl https://github.com/tst2005/ tst2005
+# gitrepo_set_stuff origin  tst2005/lunajson
+# gitrepo_set_stuff origin  tst2005/lunajson json
 # 
 
 _getfullurl() {
@@ -229,13 +229,13 @@ gitrepo_clone() {
 
 gitrepo() {
 	case "$1" in
-		init)	shift; gitall_init "$@" ;;
+		init)	shift; gitrepo_init "$@" ;;
 		add|addrepo) shift
 			gitrepo_addrepo "$@"
 		;;
 		baseurl|origin|upstream)
 			local stuff="$1"; shift
-			gitall_set_stuff "$stuff" "$@"
+			gitrepo_set_stuff "$stuff" "$@"
 		;;
 		list)
 			shift

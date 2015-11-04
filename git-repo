@@ -32,7 +32,6 @@ gitrepo_init() {
 #   baseurl [REMOTE [URL|-]]     get/set/delete the baseurl of a remote
 #   origin [REPO [REMOTE|URL|-]] get/set/delete the known origin of a repo
 
-
 set_url_name() {
         url="${1%/}" # FIXME: rtrip / url
         if [ $# -eq 1 ] || [ -z "$2" ]; then
@@ -42,9 +41,6 @@ set_url_name() {
 		url="$url/"
 		name="$2"
 	fi
-}
-autoname_from_url() {
-	basename "$1" .git
 }
 
 # https://domain.tld/user/repo[.git] ->  https://domain.tld/user/
@@ -64,17 +60,23 @@ get_suffix_from_url() {
 [ "$(get_suffix_from_url 'scheme://domain.tld/user/repo[.git]')" = 'user/repo[.git]' ] || echo "INTERNAL error for get_suffix_from_url"
 
 # https://domain.tld/user/ -> user
-get_name_from_baseurl() {
+get_username_from_baseurl() {
 	basename "$1"
 }
-[ "$(get_name_from_baseurl 'scheme://domain.tld/user/')" = 'user' ] || echo "INTERNAL error for get_name_from_baseurl"
+[ "$(get_username_from_baseurl 'scheme://domain.tld/user/')" = 'user' ] || echo "INTERNAL error for get_username_from_baseurl"
 
 # user/repo[.git] -> user
-get_name_from_suffix() {
+get_username_from_suffix() {
 	dirname "$1"
 }
-[ "$(get_name_from_suffix 'user/repo[.git]')" = 'user' ] || echo "INTERNAL error for get_name_from_suffix"
+[ "$(get_username_from_suffix 'user/repo[.git]')" = 'user' ] || echo "INTERNAL error for get_username_from_suffix"
 
+# [...]user/repo[.git] -> repo
+get_reponame_from_url() {
+	basename "$1" .git
+}
+[ "$(get_reponame_from_url 'user/repo.git')" = 'repo' ] || echo "INTERNAL error for get_reponame_from_url (1)"
+[ "$(get_reponame_from_url 'scheme://domain.tld/user/repo.git')" = 'repo' ] || echo "INTERNAL error for get_reponame_from_url (2)"
 
 
 _pathfor() {
@@ -95,6 +97,43 @@ _write() {
 	printf '%s\n' "$1" > "$infile"
 }
 
+gitrepo_raw_autoname_stuff() {
+	local stuff="$1";shift
+	case "$stuff" in
+		baseurl)
+			get_username_from_baseurl "$1"
+		;;
+		origin|upstream)
+			get_username_from_suffix "$1"
+		;;
+		*)
+			_fatal "internal error: invalid stuff '$stuff'"
+			return 1
+	esac
+}
+
+# for baseurl : <baseurl>         [<name>]
+# for origin  : <origin-suffix>   [<name>]
+# for upstream: <upstream-suffix> [<name>]
+gitrepo_raw_set_stuff() {
+	local stuff="$1";shift
+	local name="${2:-$(gitrepo_raw_autoname_stuff "$stuff" "$1")}"
+
+	local infile
+	_pathfor "$stuff" "$name"
+	_write "$1" || _fatal "error occured during write of $stuff named $name"
+}
+
+# <url> [<dirname>]
+gitrepo_autosplit() {
+	baseurl="$(get_baseurl_from_url "$1")"
+	suffix="$(get_suffix_from_url "$1")"
+	username="$(get_username_from_baseurl "$baseurl")"
+	reponame="$(get_reponame_from_url "$1")"
+	localdirname="${2:-$name}"
+}
+
+#
 gitrepo_set_stuff() {
 	local stuff="$1";shift
 	case "$stuff" in
@@ -152,7 +191,7 @@ gitrepo_addrepo() {
 			local name url
 			set_url_name "$baseurl" "$2"
 			if gitrepo_set_stuff baseurl "$url"; then
-			        local localname="${2:-$(autoname_from_url "$1")}"
+			        local localname="${2:-$(get_reponame_from_url "$1")}"
 				local r="${1#*://*/}"
 				gitrepo_set_origin "$r" "$localname"
 			fi
@@ -165,14 +204,14 @@ gitrepo_addrepo() {
 			if _exists; then
 				local baseurl="$(_read)"
 				[ "$baseurl" = "" ] ;# FIXME: check if the value is equal as the one wanted...
-				# is pas identique recommande d'utiliser user/suffix  pour ajouter baseurl/user/suffix ?
+				# si pas identique recommande d'utiliser user/suffix  pour ajouter baseurl/user/suffix ?
 			else
 				gitrepo_set_stuff baseurl "$baseurl"
 			fi
-			local localname="${2:-$(autoname_from_url "$1")}"
+			local localdirname="${2:-$(get_reponame_from_url "$1")}"
 			local infile
-			_pathfor origin "$localname"
-			_write "$1" || _fatal "error occured during write of $localname"
+			_pathfor origin "$localdirname"
+			_write "$1" || _fatal "error occured during write of $localdirname"
 	esac
 }
 
@@ -180,7 +219,7 @@ gitrepo_addrepo() {
 # gitrepo_set_stuff baseurl https://github.com/tst2005/ tst2005
 # gitrepo_set_stuff origin  tst2005/lunajson
 # gitrepo_set_stuff origin  tst2005/lunajson json
-# 
+#
 
 _getfullurl() {
 	local infile
@@ -192,7 +231,7 @@ _getfullurl() {
 	local suffix="$(_read)"
 	local base="${suffix%%/*}" # (equal to basename)
 	local infile
-	_pathfor baseurl "$base" 
+	_pathfor baseurl "$base"
 	if ! _exists; then
 		echo "no such baseurl for $base"
 		return 2
@@ -208,7 +247,6 @@ gitrepo_list_one() {
 	printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
 }
 
-
 gitrepo_list_all() {
 	_checkdir
 	(
@@ -219,7 +257,6 @@ gitrepo_list_all() {
 		done
 	)
 }
-
 
 gitrepo_list() {
 	_checkdir
@@ -244,29 +281,26 @@ gitrepo_list() {
 	done
 }
 
-gitrepo_clone() {
-	local reponame="$1";shift
-	
-}
+#gitrepo_clone() {
+#	local reponame="$1";shift
+#	...
+#}
 
 gitrepo_parseoptions() {
 	local s=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
-			--)			s=$(($s+1)); break ;;
-			--help|-h)
-				action=help;	s=$(($s+1)); break ;;
-			--list|-l)
-				action=list;	s=$(($s+1)); break ;;
-			--force|-f)
-				opt_force=true; s=$(($s+1));;
+			--)					s=$(($s+1)); break ;;
+			--help|-h)		action=help;	s=$(($s+1)); break ;;
+			--list|-l)		action=list;	s=$(($s+1)); break ;;
+			--force|-f)		opt_force=true; s=$(($s+1));;
 			--*)
 				:
 			;;
 			-*)
 				:
 			;;
-			*) break
+			*)					break ;;
 		esac
 		shift; s=$(($s+1));
 	done
@@ -277,9 +311,10 @@ gitrepo_parseaction() {
 	case "$a" in
 		help) ;;
 		init) ;;
-		list|ls) a=list ;;
+		list|ls) a='list' ;;
 		add|addrepo) a='add';;
 		baseurl|origin|upstream) ;;
+		spliturl) ;;
 		*) a=""
 	esac
 	if [ -z "$a" ]; then
@@ -308,11 +343,14 @@ gitrepo() {
 			action="help"
 		fi
 	fi
+
 	case "$action" in
 		help)
-			usage; exit 0;;
+			usage; exit 0
+		;;
 		init)
-			gitrepo_init "$@" ;;
+			gitrepo_init "$@"
+		;;
 		add|addrepo)
 			gitrepo_addrepo "$@"
 		;;
@@ -321,6 +359,12 @@ gitrepo() {
 		;;
 		list)
 			gitrepo_list "$@"
+		;;
+		spliturl)
+			local baseurl suffix username reponame localdirname
+			gitrepo_autosplit "$1" "$2"
+			echo "1) add baseurl key=$username value=$baseurl"
+			echo "2) add origin key=$localdirname value=$suffix"
 		;;
 		_error_) echo error ;;
 		*)

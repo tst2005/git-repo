@@ -1,21 +1,246 @@
 #!/bin/sh
 
-GITALL_DIRNAME="${GITALL_DIRNAME:-.git_repo.d}"
-GITALL_DIR="$(pwd)/${GITALL_DIRNAME}"
+
+# https://en.wikipedia.org/wiki/URL_normalization
+
+# RFC 2396 Format for Literal IPv6 Addresses in URL's
+#
+#      http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html
+#      http://[1080:0:0:0:8:800:200C:417A]/index.html
+#      http://[3ffe:2a00:100:7031::1]
+#      http://[1080::8:800:200C:417A]/foo
+#      http://[::192.9.5.5]/ipng
+#      http://[::FFFF:129.144.52.38]:80/index.html
+#      http://[2010:836B:4179::836B:4179]
+
+# git usual URL syntaxe :
+#   <scheme>://[<user>[:<pass>]@]<host>[:<port>][<uri>[?<args>]]
+# git scp-like syntaxe :
+#              [<user>[:<pass>]@]<host>[:<uri>[?<args>]]
+
+# man git clone ;search="GIT URLS"
+#	    ssh://[user@]host.xz[:port]/path/to/repo.git/
+#	    git://host.xz[:port]/path/to/repo.git/
+#	http[s]://host.xz[:port]/path/to/repo.git/
+#	 ftp[s]://host.xz[:port]/path/to/repo.git/
+#	  rsync://host.xz/path/to/repo.git/
+# An alternative scp-like syntax may also be used with the ssh protocol:
+#	         [user@]host.xz:path/to/repo.git/
+
+url_join() {
+	local toformat
+	case "$1" in
+		rfc|git) toformat="$1" ;;
+		*)
+			URL_ERROR="invalid format $1. must be 'rfc' or 'git'."
+			echo >&2 "$URL_ERROR"
+			return 1
+	esac
+
+	local r
+	case "$toformat" in
+		git)
+			if [ -n "$URL_PORT" ]; then
+				URL_ERROR='git format does not support to provide a port number'
+				echo >&2 "$URL_ERROR"
+				return 1
+			fi
+			r=""
+		;;
+		rfc) r="${URL_SCHEME:-ssh}://" ;;
+	esac
+	r="${r}${URL_USER:-}${URL_PASS:+:$URL_PASS}"
+	if [ -n "$URL_USER" ] || [ -n "$URL_PASS" ]; then
+		r="${r}@"
+	fi
+	case "$URL_HOST" in
+		*:*)	# IPv6, host inside []
+			r="${r}[${URL_HOST:-}]"
+		;;
+		*)	# not IPv6
+			r="${r}${URL_HOST:-}"
+	esac
+	case "$toformat" in
+		git)	;;
+		rfc)
+			r="${r}${URL_PORT:+:$URL_PORT}"
+		;;
+	esac
+	case "$toformat" in
+		git) r="${r}:" ;;
+		rfc)
+			if [ -n "${URL_HOST}" ]; then
+				if [ -n "${URL_URI:-}" ] || [ -n "${URL_ARGS:-}" ]; then
+					r="${r}/"
+				fi
+			fi
+		;;
+	esac
+	r="${r}${URL_URI:-}${URL_ARGS:+?$URL_ARGS}"
+	printf '%s\n' "$r"
+}
+
+url_parse_user_pass() {
+	local user_pass="$1"
+	user="${user_pass%%:*}"   ;# [<user>]
+        pass="${user_pass#*:}"    ;# [<pass>]
+        [ "$pass" = "$user_pass" ] && pass=""           ;# no pass
+}
+
+url_parse_uri_args() {
+	local uri_args="$1"
+	uri="${uri_args%%\?*}"				;# [<uri>]
+	args="${uri_args#*\?}"				;# [<args>]
+	[ "$args" = "$uri" ] && args=""			;# no args
+}
+
+url_parse_port_uri_args_rfc() {
+	local url="$1"						;# url = ...<host>[:<port>]/<uri...>
+	local isipv6="$2"
+
+	if $isipv6; then
+		host="${url%%\]*}"; host="${host#\[}" ;# trim '[' and ']' from host
+		local port_uri_args="${url#*\]}"	;# cut after the first ']'
+
+		uri_args="${port_uri_args#*/}"				;# [<uri>[?<args>]]
+		#[ "$uri_args" = "$port_uri_args" ] && uri_args="" || uri_args="/$uri_args"	;# empty uri_args
+		local host_port="${port_uri_args%%/*}"			;# <host>[:<port>]
+		if [ "$(printf '%1c' "$port_uri_args")" = ':' ]; then
+			port="${host_port##*:}"				;# [<port>]
+			[ "$port" = "$host_port" ] && port=""		;# empty port
+		else
+			port=""
+		fi
+	else
+		case "$url" in
+			/*)	uri_args="$url" ;;
+			*)	uri_args="${url#*/}"					;# [<uri>[?<args>]]
+		esac
+		#[ "$uri_args" = "$url" ] && uri_args="" || uri_args="/$uri_args"	;# empty uri_args
+
+		local host_port="${url%%/*}"				;# <host>[:<port>]
+		host="${host_port%:*}"					;# <host>
+		port="${host_port##*:}"					;# [<port>]
+		[ "$port" = "$host_port" ] && port=""			;# empty port
+	fi
+}
+
+url_parse_port_uri_args_git() {
+	local url="$1"
+	local isipv6="$2"
+
+	if $isipv6; then
+		host="${url%%\]*}"; host="${host#\[}"		;# <host> without '[' and ']'
+		uri_args="${url#*\]:}"
+	else
+		host="${url%%:*}"				;# <host>
+		uri_args="${url#*:}"				;# [<uri>[?<args>]]
+	fi
+	port=""							;# port (always) empty
+	[ "$uri_args" = "$url" ] && uri_args=""			;# empty uri
+}
+
+# potential bugs :
+# - no scheme but URI or ARGS contains ://
+# - URI doit contenir le premier / ou non ??
+
+url_split() {
+	local url="$1"; shift ;# https://user:pass@host:port/uri?args
+
+	local scheme="${url%%://*}"			;# <scheme>://...
+	[ "$scheme" = "$url" ] && scheme=""		;# no scheme
+
+	[ -z "$scheme" ] || url="${url#*://}"		;# url without scheme = [<user>[:<pass>]@]<host>[:<port>][<uri>[?<args>]]
+
+	local user_pass="${url%%@*}"			;# [<user>[:<pass>]
+	[ "$user_pass" = "$url" ] && user_pass=""	;# no such user/pass
+
+	local user pass
+	url_parse_user_pass "$user_pass"
+
+	local url3="${url#*@}"				;# <host>[:<port>][<uri>[?<args>]]
+
+	local isipv6 ;# its IPv6 if url3 startwith '['
+	[ -z "${url3%%\[*}" ] && isipv6=true || isipv6=false
+
+	local host port uri_args
+	if [ -z "$scheme" ]; then
+		url_parse_port_uri_args_git "$url3" $isipv6
+	else
+		url_parse_port_uri_args_rfc "$url3" $isipv6
+	fi
+
+	local uri args
+	url_parse_uri_args "$uri_args"
+
+	URL_SCHEME="$scheme"; URL_USER="$user"; URL_PASS="$pass"; URL_HOST="$host"; URL_PORT="$port"; URL_URI="$uri"; URL_ARGS="$args"
+}
+
+url_split_debug() {
+	local url="$1"; shift ;# https://user:pass@host:port/uri?args
+	#local URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS
+	url_split "$url"
+
+	local fmt="$1"; shift
+	[ -z "$fmt" ] && fmt='s=%s u=%s p=%s h=%s p=%s u=%s a=%s\n'
+	printf "$fmt"  "$URL_SCHEME"  "$URL_USER"  "$URL_PASS"  "$URL_HOST"  "$URL_PORT"  "$URL_URI"  "$URL_ARGS"
+}
+
+
+# export -p
+# -> export NAME=VALUE (for dash, mksh, busybox ash)
+# -> declare -x NAME=VALUE (for bash)
+#
+
+#quotedprintenv() {
+#	#export -p | sed -e 's,^\(declare\|export\) \(-[^ ]\+ \|\),,g'
+#	export -p | while read -r line; do
+#		case "$line" in
+#			'declare -'?*' '?*) printf '%s\n' "${line#*-* }" ;;
+#			'export '?*) printf '%s\n' "${line#* }" ;;
+#		esac
+#	done
+#}
+
+#	gitrepo_url_split() {
+#	#	(
+#	#	local URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS
+#		eval "$(
+#		cd "$(dirname "$0")" || return 1
+#		. ./urlparser.sh
+#		url_split "$1"
+#		export URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS
+#		quotedprintenv | grep '^URL_'
+#		)"
+#	#	)
+#	#	[ -z "$URL_SCHEME$URL_HACK" ] && echo "ok: global non exposé" || echo "attention exposé en global, pas cool, pas ok"
+#	}
+
 
 _fatal() {
 	echo >&2 "ERROR: $1"
 	exit 1
 }
 
-_initok() { [ -d "$GITALL_DIR" ]; }
+_initok() { [ -d "$GITREPO_DIR" ]; }
 
 _checkdir() {
-	_initok || _fatal "No such $GITALL_DIR"
+	_initok || _fatal "No such $GITREPO_DIR"
 }
 
 usage() {
 	echo "Usage: $0 <...>"
+	echo '  help
+  init
+  add|addrepo
+  baseurl
+  origin
+  upstream
+  list
+  spliturl
+  clone
+  update
+'
 }
 
 gitrepo_init() {
@@ -25,7 +250,7 @@ gitrepo_init() {
 		return 0
 	fi
 	(
-		cd -- "$indir" && mkdir -- "$GITALL_DIR";
+		cd -- "$indir" && mkdir -- "$GITREPO_DIR";
 	) || return 1
 }
 
@@ -43,7 +268,13 @@ set_url_name() {
 	fi
 }
 
-# https://domain.tld/user/repo[.git] ->  https://domain.tld/user/
+# https://domain.tld/user/repo[.git] -> https
+get_scheme_from_url() {
+	printf '%s' "${1%%://*}"
+}
+[ "$(get_scheme_from_url 'scheme://domain.tld/user/repo[.git]')" = 'scheme' ] || echo "INTERNAL error for get_scheme_from_url"
+
+# https://domain.tld/user/repo[.git] -> https://domain.tld/user/
 get_baseurl_from_url() {
 	printf '%s/' "$(dirname "$1")"
 }
@@ -80,15 +311,26 @@ get_reponame_from_url() {
 
 
 _pathfor() {
-	infile="$GITALL_DIR/$1/$2.$1"
+	infile="$GITREPO_DIR/$1/$2.$1"
 }
 _exists() {
 	[ -f "$infile" ]
 }
+_rawread() {
+	[ -d "$(dirname "$infile")" ] || return 1
+	head -n "$1" -- "$infile"
+}
+# _read [<what>]
 _read() {
 	[ -d "$(dirname "$infile")" ] || return 1
-	cat -- "$infile"
+	while read -r line; do
+		case "$line" in
+			""|"#"*) ;;
+			*) printf '%s\n' "$line"
+		esac
+	done <"$infile"
 }
+
 _write() {
 	local dir="$(dirname "$infile")"
 	if [ ! -d "$dir" ]; then
@@ -152,7 +394,7 @@ gitrepo_set_stuff() {
 	_pathfor "$stuff" "$name"
 
 	if _exists; then
-		local value="$(_read)"
+		local value="$(_read "$stuff")"
 		if [ "$value" != "$url" ]; then
 			echo "$stuff for $name already exists with a different value ('$value' != '$url')"
 			return 1
@@ -168,6 +410,14 @@ gitrepo_set_origin() {
 	_write "$1" || _fatal "error occured during write of $2"
 }
 
+_islocalonly() {
+	local infile
+	_pathfor origin "$1"
+	case "$(_read origin)" in
+		"") return 0 ;;
+	esac
+	return 1
+}
 _checkscheme() {
 	case "$1" in
 		https://*) ;;
@@ -182,6 +432,11 @@ _checkscheme() {
 # ...repo add cc/dd[.git] [localname]
 
 gitrepo_addrepo() {
+	local URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS URL_ERROR
+	url_split "$1"
+#	local baseurl="${URL_SCHEME}"
+	printf -- '- %s (original)\n  %s (parsed, splited, recontructed)\n' "$1" "$(url_join)"
+	export URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS; printenv | grep ^URL_
 	case "$1" in
 		*?://*)
 			if ! _checkscheme "$1"; then
@@ -202,7 +457,7 @@ gitrepo_addrepo() {
 			local infile
 			_pathfor baseurl "$base"
 			if _exists; then
-				local baseurl="$(_read)"
+				local baseurl="$(_read baseurl)"
 				[ "$baseurl" = "" ] ;# FIXME: check if the value is equal as the one wanted...
 				# si pas identique recommande d'utiliser user/suffix  pour ajouter baseurl/user/suffix ?
 			else
@@ -215,52 +470,99 @@ gitrepo_addrepo() {
 	esac
 }
 
+format_github() {
+	case "$baseurl" in
+		https://github.com/*) # github (read-only)
+		;;
+		ssh://git@github.com/*) # github (read/write)
+		;;
+		ssh://gitolite@*) # gitolite (read-only or read/write)
+		;;
+		*)
+	esac
+}
+
 # gitrepo_set_stuff baseurl https://github.com/tst2005/
 # gitrepo_set_stuff baseurl https://github.com/tst2005/ tst2005
 # gitrepo_set_stuff origin  tst2005/lunajson
 # gitrepo_set_stuff origin  tst2005/lunajson json
 #
 
+# _getfullurl <username/reponame>
+# returns: <fullurl> [<wanted_scheme>]
 _getfullurl() {
+	local origin="$1"
+	local wanted_scheme="$2"
 	local infile
-	_pathfor origin "$1"
+	_pathfor origin "$origin"
 	if ! _exists; then
-		echo >&2 "no such origin for $1 ($infile)"
+		#echo >&2 "no such origin for $origin ($infile)"
 		return 1
 	fi
-	local suffix="$(_read)"
+
+	local suffix="$(_read suffix)"
+	if [ -z "$suffix" ]; then
+		# empty = local only repository
+		return 0
+	fi
+
 	local base="${suffix%%/*}" # (equal to basename)
 	local infile
 	_pathfor baseurl "$base"
 	if ! _exists; then
-		echo "no such baseurl for $base"
+		#echo >&2 "no such baseurl for $base"
 		return 2
 	fi
-	local baseurl="$(_read)"
-	local suffix="${suffix#*/}" # the left part without the first word, who is on the baseurl
-	printf %s "$baseurl$suffix"
+	local baseurl="$(_read baseurl)"
+	baseurl="${baseurl%/}"
+	local scheme="${wanted_scheme:-$(get_scheme_from_url "$baseurl")}"
+	local shortbaseurl="${baseurl#*://}" # remove the scheme://
+	local suffix="${suffix#*/}" # the right part without the first word, who is on the baseurl
+
+#	_pathfor format "$base"
+#	local format
+#	if _exists; then
+#		format="$(_read format | grep '^'"$scheme"'://' | head -n 1)"
+#	fi
+	printf "${format:-$scheme://%s/%s}" "$shortbaseurl" "$suffix"
+}
+
+gitrepo_get_allrepo() {
+	_checkdir
+	(
+		cd -- "$GITREPO_DIR" && \
+		for f in origin/*.origin; do
+			f="$(basename "$f" .origin)"
+			printf '%s\n' "$f"
+		done
+	)
 }
 
 gitrepo_list_one() {
 	_checkdir
 	local f="$1" ;# "${1%.origin}"
-	printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
+	local url;url="$(_getfullurl "$f" "$opt_scheme")"
+	local c=$?
+	if [ -z "$url" ]; then
+		case "$c" in
+			0) url="(no url, local only repository)" ;;
+			1) url="(no url. Error: no such origin for $f)" ;;
+			2) url="(no url. Error: no such baseurl for $f)" ;;
+			*) url="(no url, due to unknown error $c)"
+		esac
+	fi
+	printf '%-20s %s\n' "$f/" "${url:-}"
 }
 
 gitrepo_list_all() {
 	_checkdir
-	(
-		cd -- "$GITALL_DIR" && \
-		for f in origin/*.origin; do
-			f="$(basename "$f" .origin)"
-			printf '%-20s %s\n' "$f/" "$(_getfullurl "$f")"
-		done
-	)
+	for f in $(gitrepo_get_allrepo); do
+		gitrepo_list_one "$f"
+	done
 }
 
 gitrepo_list() {
 	_checkdir
-
 	if [ $# -eq 0 ]; then
 		gitrepo_list_all
 		return $?
@@ -271,41 +573,101 @@ gitrepo_list() {
 		if _exists; then
 			gitrepo_list_one "$f"
 		else
-			_pathfor origin "${f%.origin}"
-			if _exists; then
+			#_pathfor origin "${f%.origin}"
+			#if _exists; then
 				gitrepo_list_one "${f%.origin}"
-			else
-				echo "No such $f"
-			fi
+			#else
+			#	echo "No such $f"
+			#fi
 		fi
 	done
 }
 
-#gitrepo_clone() {
-#	local reponame="$1";shift
-#	...
-#}
+gitrepo_clone_one() {
+	local reponame="$1";shift
+	if [ -d "$reponame" ]; then
+		echo "$reponame: directory already exists"
+		return 1
+	fi
+	local fullurl="$(_getfullurl "$reponame" "$opt_scheme")"
 
-gitrepo_parseoptions() {
-	local s=0
-	while [ $# -gt 0 ]; do
-		case "$1" in
-			--)					s=$(($s+1)); break ;;
-			--help|-h)		action=help;	s=$(($s+1)); break ;;
-			--list|-l)		action=list;	s=$(($s+1)); break ;;
-			--force|-f)		opt_force=true; s=$(($s+1));;
-			--*)
-				:
-			;;
-			-*)
-				:
-			;;
-			*)					break ;;
-		esac
-		shift; s=$(($s+1));
-	done
-	shift="$s"
+        # Run the command and print the output in case of error
+	local output;output="$(git clone "$fullurl" "$reponame" 2>&1)" || {
+		echo "$output"
+		return 1
+	}
+	return 0
 }
+
+gitrepo_clone() {
+	local _ERROR_
+	for reponame in "$@"; do
+		gitrepo_clone_one "$reponame" || _ERROR_=1
+	done
+	[ -n "$_ERROR" ] && return 1
+	return 0
+}
+
+# Update command
+gitrepo_cmd_update() {
+	local dir repo remote remote_name remote_url
+	# For all projects
+	for dir in $(gitrepo_get_allrepo); do
+
+		if [ ! -d "$dir" ]; then
+			# Get informations about the current project
+			if _islocalonly "$dir"; then
+				# Print the repository
+				#echo "$dir:" #echo -e "${C_BLUE}$dir${C_OFF}:"
+				#printf "${INDENT}%-${MBL}s${C_RED} %s${C_OFF} " " " "No URL defined"
+				#echo -e "${C_BLUE}[Local only repository]${C_OFF}"
+				printf '%-25s: %s\n' "$dir" "No URL defined [Local only repository]"
+				continue
+			fi
+
+			# Print the repository
+			#echo "$dir:" #echo -e "${C_BLUE}$dir${C_OFF}:"
+			#printf "${INDENT}%-${MBL}s${C_CYAN} %s${C_OFF}\n" " " "Cloning…"
+			printf '%-25s: %s' "$dir" "Cloning…"
+
+			# Clone the repository
+			if ! gitrepo_clone_one "$dir"; then
+				#printf "${INDENT}%-${MBL}s${C_RED} %s${C_OFF}\n" " " "Error"
+				printf '%s\n' "ERROR"
+				continue ;# FIXME: continue instead of return ?!
+			fi
+			#printf "${INDENT}%-${MBL}s${C_GREEN} %s${C_OFF}\n" " " "Cloned"
+			printf ' %s\n' "Cloned."
+		else
+			# Print the repository
+			#echo -e "${C_BLUE}$dir${C_OFF}:"
+			#printf "${INDENT}%-${MBL}s${C_GREEN} %s${C_OFF} " " " "Already exists"
+			if _islocalonly "$dir"; then
+				printf '%-25s: %s\n' "$dir" "Already exists [Local only repository]"
+				#echo -e "${C_BLUE}[Local only repository]${C_OFF}"
+				continue
+			else
+				printf '%-25s: %s\n' "$dir" "Already exists"
+			fi
+		fi
+
+#		# Verify all remotes, create if not existing
+#		#IFS=${ARRAY_LINE_SEP} read -a array <<< "${projects[$dir]}"
+#		for remote in "${array[@]}"; do
+#			#remote_name=$(cut -d${FIELD_SEP} -f1 <<< ${remote})
+#			#remote_url=$(cut -d${FIELD_SEP} -f2 <<< ${remote})
+#			if ! git_remote_exists "${dir}" "${remote_name}"; then
+#				git_add_remote "${dir}" "${remote_name}" "${remote_url}"
+#			fi
+#		done
+	done
+	return 0
+}
+
+
+
+
+
 gitrepo_parseaction() {
 	local a="$1"
 	case "$a" in
@@ -315,7 +677,8 @@ gitrepo_parseaction() {
 		add|addrepo) a='add';;
 		baseurl|origin|upstream) ;;
 		spliturl) ;;
-		*) a=""
+		clone) ;;
+		*) #a=""
 	esac
 	if [ -z "$a" ]; then
 		return 1
@@ -325,10 +688,43 @@ gitrepo_parseaction() {
 }
 
 gitrepo() {
+
+
 	local opt_force=false
-	local action shift
-	gitrepo_parseoptions "$@"
-	shift $shift
+	local opt_scheme
+	local action
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--)					shift; break ;;
+			--help|-h)		action=help;	shift; break ;;
+			--list|-l)		action=list;	shift; break ;;
+			--force|-f)		opt_force=true ;;
+			--scheme)		shift; opt_scheme="$1" ;;
+			-d)
+				shift;
+				case "$1" in
+					/*)	GITREPO_DIR="$1" ;;
+					*)	GITREPO_DIR="$(pwd)/$1" ;;
+				esac
+			;;
+			-N)
+				shift;
+				GITREPO_DIRNAME="$1"
+			;;
+			--*)
+				:
+			;;
+			-*)
+				:
+			;;
+			*)					break ;;
+		esac
+		shift;
+	done
+
+	GITREPO_DIRNAME="${GITREPO_DIRNAME:-.git_repo.d}"
+	GITREPO_DIR="${GITREPO_DIR:-$(pwd)}/${GITREPO_DIRNAME}"
 
 	# default action
 	if [ -z "$action" ]; then
@@ -354,17 +750,75 @@ gitrepo() {
 		add|addrepo)
 			gitrepo_addrepo "$@"
 		;;
-		baseurl|origin|upstream)
+		set-baseurl|set-origin|set-upstream)
+			action="${action#set-}"
 			gitrepo_set_stuff "$action" "$@"
 		;;
 		list)
 			gitrepo_list "$@"
 		;;
-		spliturl)
+		split)
 			local baseurl suffix username reponame localdirname
 			gitrepo_autosplit "$1" "$2"
 			echo "1) add baseurl key=$username value=$baseurl"
 			echo "2) add origin key=$localdirname value=$suffix"
+		;;
+		spliturl)
+			local URL_SCHEME URL_USER URL_PASS URL_HOST URL_PORT URL_URI URL_ARGS URL_ERROR
+			url_split "$1"
+			echo "split: $1"
+
+			case "$URL_SCHEME" in
+				http)	if [ "$URL_PORT" = "80"   ]; then URL_PORT=''; fi ;;
+				https)	if [ "$URL_PORT" = "443"  ]; then URL_PORT=''; fi ;;
+				ssh)	if [ "$URL_PORT" = "22"   ]; then URL_PORT=''; fi ;;
+				git)	if [ "$URL_PORT" = "9418" ]; then URL_PORT=''; fi ;;
+			esac
+
+			# rtrim '/'
+			case "$URL_URI" in
+				*/)
+					while [ "${URL_URI%/}" != "$URL_URI" ]; do
+						URL_URI="${URL_URI%/}"
+					done
+				;;
+			esac
+
+			case "$URL_HOST" in
+				github.com)
+					[ -z "$URL_PORT" ] || echo "ERROR"
+					URL_USER='git' URL_PASS=''
+					case "$URL_URI" in
+						*.git) URL_URI="${URL_URI%.git}" ;;
+					esac
+				;;
+			esac
+
+			(
+			local URL_ERROR
+			URL_SCHEME=git
+			echo "format git  : $(url_join 2>&- git || echo "(not supported, reason: $URL_ERROR)") $URL_ERROR"
+			)
+
+			(
+			local URL_ERROR
+			URL_SCHEME=https
+			URL_USER='' URL_PASS=''
+			URL_URI="${URL_URI%.git}"
+			echo "format https: $(url_join rfc) $URL_ERROR"
+			)
+
+			(
+			local URL_ERROR
+			URL_SCHEME=ssh
+			echo "format ssh  : $(url_join rfc) $URL_ERROR"
+			)
+		;;
+		clone)
+			gitrepo_clone "$@"
+		;;
+		update)
+			gitrepo_cmd_update "$@"
 		;;
 		_error_) echo error ;;
 		*)
